@@ -16,7 +16,7 @@ classifiers = [
     "Operating System :: Microsoft :: Windows",
     "Topic :: Communications :: Chat",
 ]
-dependencies = ["cryptography>=41", "zstandard>=0.22,<1", "Pillow>=10"]
+dependencies = ["cryptography>=41", "zstandard>=0.22,<1", "Pillow>=10", "imageio-ffmpeg>=0.6,<0.7"]
 
 [project.scripts]
 wechat-export = "wechat_readable_export.cli:main"

@@ -610,10 +610,20 @@ class _LocalReader:
                         conversation.warnings.append("图片资源数据库无法校验或读取，图片仅按明确的消息线索和本地缩略图查找。")
                     break
         def keys(samples):
-            from .image_codec import find_image_key
+            from .image_codec import find_config_image_key, find_image_key
             self.progress("正在只读查找图片解密材料…")
             try:
-                return find_image_key(_weixin_pids(), samples, progress=self.progress)
+                pids = _weixin_pids()
+                own = re.sub(r"_[A-Za-z0-9]{4}$", "", self.account_path.name)
+                if (conversation.metadata.get("self_identity_confirmed")
+                        and any(contact.username == own for contact in (self._all_contacts or []))):
+                    try:
+                        derived = find_config_image_key(pids, own, samples, progress=self.progress)
+                    except (OSError, ValueError):
+                        derived = (None, None)
+                    if derived[0] is not None:
+                        return derived
+                return find_image_key(pids, samples, progress=self.progress)
             except (ExportError, OSError, ValueError):
                 return None, None
         self.progress("正在读取图片和表情…" + ("（允许从微信 CDN 获取缺失表情）" if download_stickers else "（仅本地文件）"))

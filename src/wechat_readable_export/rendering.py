@@ -15,6 +15,7 @@ from typing import Iterable
 
 from .media_payload import parse_media
 from .models import Conversation, ExportError, Message
+from .native_emoji import get_render_assets, prepare_native_assets, render_native_text
 
 _FORMATS = frozenset({"html", "txt", "json"})
 _SCOPE = "仅包含提供的本地数据库中可读取的聊天记录，不能代表账号的全部历史记录。"
@@ -37,7 +38,8 @@ button{font-size:12px;background:#fff;color:var(--ink);border:1px solid #ccd9d0;
 .message-meta{display:flex;gap:10px;align-items:baseline;font-size:11px;color:var(--muted);max-width:100%;margin:0 4px 5px}.sender{font-weight:650;color:#38594d;overflow-wrap:anywhere}.message.self .message-meta{flex-direction:row-reverse}
 .bubble{min-width:65px;max-width:100%;background:#fff;border:1px solid var(--line);border-radius:3px 13px 13px 13px;padding:11px 15px;box-shadow:0 2px 3px #173c2210}.self .bubble{background:#e0f0e7;border-color:#c5dfcf;border-radius:13px 3px 13px 13px}
 .message-content,.transcript{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.transcript{margin-top:8px;padding-top:8px;border-top:1px solid #d7e4dc;font-size:13px;color:#456454}.type-label{font-size:10px;display:inline-block;margin-bottom:5px;color:var(--muted)}
-.media-toggle{display:block;max-width:100%;padding:0;margin-top:8px;border:0;background:transparent;border-radius:8px;overflow:hidden;cursor:zoom-in}.media-image{display:block;max-width:100%;width:auto;height:auto;max-height:340px;object-fit:contain;border-radius:8px}.media-toggle:not(.expanded){max-width:320px}.media-toggle.expanded{cursor:zoom-out}.media-toggle.expanded .media-image{max-height:none}.media-hint,.media-unavailable,.media-reason{font-size:11px;color:var(--muted);margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere}
+.native-emoji{display:inline-block;position:relative;width:1.5em;height:1.5em;vertical-align:-.35em;white-space:normal}.native-emoji-image{display:block;width:100%;height:100%;object-fit:contain}.native-emoji-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+.media-toggle{display:block;max-width:100%;padding:0;margin-top:8px;border:0;background:transparent;border-radius:8px;overflow:hidden;cursor:zoom-in}.media-toggle:first-child{margin-top:0}.media-image{display:block;max-width:100%;width:auto;height:auto;max-height:340px;object-fit:contain;border-radius:8px}.media-toggle:not(.expanded){max-width:320px}.media-toggle.expanded{cursor:zoom-out}.media-toggle.expanded .media-image{max-height:none}.media-unavailable,.media-reason{font-size:11px;color:var(--muted);margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere}
 .warnings{border:1px solid #e6dbbc;background:#fffcf1;padding:12px 16px;border-radius:9px;font-size:12px;margin:22px 0;color:#775e2a}.warnings summary{cursor:pointer;font-weight:600}.warnings ul{margin:8px 0 0;padding-left:20px;overflow-wrap:anywhere}
 .empty{text-align:center;padding:70px 20px;color:var(--muted)}.empty strong{display:block;color:var(--ink);font-size:18px;margin-bottom:6px}.footer{border-top:1px solid var(--line);padding:20px 0 30px;color:var(--muted);font-size:11px}
 [hidden]{display:none!important}@media(max-width:680px){.shell{padding:0 16px}.masthead{padding-top:28px}.filters{grid-template-columns:1fr 1fr;gap:9px}.toolbar{padding-top:12px}.message{padding-right:5%}.message.self{padding-left:5%}.summary{gap:5px 16px}.bubble{padding:10px 12px}.message-meta{gap:7px}}
@@ -163,7 +165,7 @@ def _media_html(message: Message) -> str:
     return (
         '<button class="media-toggle" type="button" aria-expanded="false" aria-label="放大图片">'
         f'<img class="media-image" src="{_escape(source)}" alt="{label}" loading="lazy" decoding="async">'
-        '</button><div class="media-hint">点击图片放大 / 缩小</div>' + reason_html
+        '</button>' + reason_html
     )
 
 
@@ -200,6 +202,7 @@ def _hash_csp(source: str) -> str:
 
 def _render_html(conversation: Conversation) -> str:
     data = conversation.to_dict()
+    native_assets = get_render_assets(conversation)
     senders = dict.fromkeys(message.sender for message in conversation.messages)
     sender_ids = {name: str(index) for index, name in enumerate(senders, start=1)}
     options = ''.join(
@@ -214,20 +217,27 @@ def _render_html(conversation: Conversation) -> str:
         items = []
         for message in messages:
             position = " self" if message.is_self is True else ""
+            image_shown = ((message.type_code & 0xFFFFFFFF) == 3
+                           and message.media is not None
+                           and message.media.status == "available")
             type_label = (
                 f'<div class="type-label">{_escape(message.type)}</div>'
-                if message.type_code != 1 else ""
+                if message.type_code != 1 and not image_shown else ""
+            )
+            content_html = (
+                f'<div class="message-content">{render_native_text(message.content, native_assets)}</div>'
+                if not (image_shown and message.content.strip() == "[图片]") else ""
             )
             transcript = _transcript(message)
             transcript_html = (
-                f'<div class="transcript">语音转写：{_escape(transcript)}</div>'
+                f'<div class="transcript">语音转写：{render_native_text(transcript, native_assets)}</div>'
                 if transcript else ""
             )
             items.append(
                 f'<article class="message{position}" data-sender="{sender_ids[message.sender]}" data-day="{day}">'
                 f'<div class="message-meta"><span class="sender">{_escape(message.sender)}</span>'
                 f'<time>{_escape(message.time)}</time></div>'
-                f'<div class="bubble">{type_label}<div class="message-content">{_escape(message.content)}</div>'
+                f'<div class="bubble">{type_label}{content_html}'
                 f'{_media_html(message)}{transcript_html}</div></article>'
             )
         sections.append(
@@ -383,6 +393,7 @@ def write_exports(
     try:
         for message in conversation.messages:
             message.media = parse_media(message.media)
+        prepare_native_assets(conversation)
         directory.mkdir(parents=True, exist_ok=True)
         _check_destinations(targets.values(), overwrite)
         for kind, target in targets.items():

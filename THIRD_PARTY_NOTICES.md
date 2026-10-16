@@ -18,8 +18,9 @@ account-switching, UI-driven media download and listener features are not includ
 `image_codec.py` adapts local image container decoding and read-only image-key
 candidate scanning from `wechatauto/media.py` at the same fixed revision. It adds
 strict segment, padding and Pillow raster validation, bounded single-pass
-scanning, and no UI, key files, monitoring or persistent caches. wxgf/HEVC display
-is not included. Existing memory access is query/read only.
+scanning, and no UI, key files, monitoring or persistent caches. `wxgf_codec.py`
+uses the same source's Annex B HEVC extraction approach, adding bounded local
+FFmpeg decoding and raster validation. Existing memory access is query/read only.
 
 The surrounding account selection, snapshot/WAL validation, CLI, message model,
 rendering and tests in this repository are maintained independently. Changes
@@ -40,11 +41,19 @@ This project does not bundle
 its full exporter or its application UI. The current parser and renderers are
 separate implementations.
 
+## Native emoji rendering
+
+`native_emoji.py` renders validated PNG tiles supplied by a per-user local cache
+or an imported export's metadata. This module contains no emoji artwork and makes
+no network requests. Artwork caches and real exports are not part of the source
+distribution.
+
 ## Runtime dependencies
 
 - `cryptography`: https://github.com/pyca/cryptography — Apache-2.0 OR BSD-3-Clause
 - `zstandard`: https://github.com/indygreg/python-zstandard — BSD-3-Clause
 - `Pillow`: https://github.com/python-pillow/Pillow — MIT-CMU (see the installed distribution for bundled-library licenses)
+- `imageio-ffmpeg`: https://github.com/imageio/imageio-ffmpeg — BSD-2-Clause for the Python wrapper. Its separately installed wheel includes an FFmpeg executable; the Windows 0.6.0 wheel's FFmpeg 7.1 build reports GPL-3.0-or-later. See the dependency's bundled license and https://ffmpeg.org/legal.html for executable licensing and source requirements. This repository does not copy that executable into its source distribution.
 
 These dependencies are installed separately by the package manager. Their own
 distributed license files govern their code and any bundled native libraries.
