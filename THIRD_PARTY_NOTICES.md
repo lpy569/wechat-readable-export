@@ -4,7 +4,7 @@
 
 - Repository: https://github.com/fanyuantaier/wechatauto-replica
 - Source revision: `91dc0e1a601013b759b261061d8f7642f736af90` (tag `v1.2.4.4`)
-- Original source: `wechatauto/db.py`
+- Original sources: `wechatauto/db.py`, `wechatauto/media.py`
 - License: Apache License 2.0
 - Included license: `src/wechat_readable_export/_vendor/LICENSE`
 - Included provenance and modification notice: `src/wechat_readable_export/_vendor/NOTICE`
@@ -13,7 +13,13 @@
 verification/decryption, read-only Windows process enumeration helpers and
 Config.Cipher key scanning. The full upstream package is not imported or
 installed. Its GUI, message-sending, process-writing, key-cache, automatic
-account-switching, media download and listener features are not included.
+account-switching, UI-driven media download and listener features are not included.
+
+`image_codec.py` adapts local image container decoding and read-only image-key
+candidate scanning from `wechatauto/media.py` at the same fixed revision. It adds
+strict segment, padding and Pillow raster validation, bounded single-pass
+scanning, and no UI, key files, monitoring or persistent caches. wxgf/HEVC display
+is not included. Existing memory access is query/read only.
 
 The surrounding account selection, snapshot/WAL validation, CLI, message model,
 rendering and tests in this repository are maintained independently. Changes
@@ -27,7 +33,10 @@ vendored module.
 - License: Apache License 2.0
 
 Its exporter informed the initial workflow and the handling of per-shard sender
-identities, message formats and disposable caches. This project does not bundle
+identities, message formats, disposable caches, resource file hashes and local
+image/thumbnail paths. `local_media.py` implements the resource lookup and local
+path handling independently, with unambiguous matching and containment checks.
+This project does not bundle
 its full exporter or its application UI. The current parser and renderers are
 separate implementations.
 
@@ -35,6 +44,7 @@ separate implementations.
 
 - `cryptography`: https://github.com/pyca/cryptography — Apache-2.0 OR BSD-3-Clause
 - `zstandard`: https://github.com/indygreg/python-zstandard — BSD-3-Clause
+- `Pillow`: https://github.com/python-pillow/Pillow — MIT-CMU (see the installed distribution for bundled-library licenses)
 
 These dependencies are installed separately by the package manager. Their own
 distributed license files govern their code and any bundled native libraries.

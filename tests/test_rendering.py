@@ -12,7 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from wechat_readable_export import rendering
-from wechat_readable_export.models import Contact, Conversation, ExportError, Message
+from wechat_readable_export.demo import demo_conversation
+from wechat_readable_export.models import Contact, Conversation, ExportError, MediaAttachment, Message
 
 
 def conversation() -> Conversation:
@@ -117,6 +118,7 @@ class RenderingTests(unittest.TestCase):
         policy = next(attrs["content"] for tag, attrs in document.tags if tag == "meta" and attrs.get("http-equiv") == "Content-Security-Policy")
         self.assertIn("default-src 'none'", policy)
         self.assertIn("connect-src 'none'", policy)
+        self.assertIn("img-src data:", policy)
         self.assertIn("form-action 'none'", policy)
         self.assertNotIn("unsafe-inline", policy)
         for tag in ("script", "style"):
@@ -124,6 +126,47 @@ class RenderingTests(unittest.TestCase):
             digest = base64.b64encode(hashlib.sha256(bundled.encode("utf-8")).digest()).decode("ascii")
             self.assertIn(f"{tag}-src 'sha256-{digest}'", policy)
         self.assertFalse(any("src" in attrs or "href" in attrs for _, attrs in document.tags))
+
+    def test_images_and_animated_stickers_are_embedded_without_external_resources(self) -> None:
+        data = demo_conversation()
+        paths = rendering.write_exports(data, self.directory)
+        source = paths["html"].read_text(encoding="utf-8")
+        document = Document(source)
+        images = [attrs for tag, attrs in document.tags if tag == "img"]
+        self.assertEqual(len(images), 2)
+        self.assertTrue(images[0]["src"].startswith("data:image/png;base64,"))
+        self.assertTrue(images[1]["src"].startswith("data:image/gif;base64,"))
+        self.assertTrue(all(attrs.get("loading") == "lazy" for attrs in images))
+        self.assertFalse(any("href" in attrs for _, attrs in document.tags))
+        self.assertFalse(any(name.startswith("on") for _, attrs in document.tags for name in attrs))
+        buttons = [attrs for tag, attrs in document.tags if tag == "button" and attrs.get("class") == "media-toggle"]
+        self.assertEqual(len(buttons), 2)
+        self.assertTrue(all(attrs["aria-expanded"] == "false" for attrs in buttons))
+        exported = json.loads(paths["json"].read_text(encoding="utf-8"))
+        self.assertEqual(exported["messages"][2]["media"]["data_base64"], images[0]["src"].split(",", 1)[1])
+        self.assertIn("[动画表情]", paths["txt"].read_text(encoding="utf-8"))
+
+    def test_missing_media_is_readable_and_its_reason_remains_literal(self) -> None:
+        data = conversation()
+        reason = '<img src="https://invalid.test" onerror="alert(1)"> & unavailable'
+        data.messages[0].type_code = 3
+        data.messages[0].content = "[图片]"
+        data.messages[0].media = MediaAttachment("image", "missing", reason=reason)
+        data.messages[1].type_code = 47
+        paths = rendering.write_exports(data, self.directory)
+        source = paths["html"].read_text(encoding="utf-8")
+        document = Document(source)
+        self.assertFalse(any(tag == "img" for tag, _ in document.tags))
+        self.assertIn(reason, ''.join(document.text))
+        self.assertIn("此记录未附带可展示的图片文件。", source)
+        self.assertIn("[媒体提示] " + reason, paths["txt"].read_text(encoding="utf-8"))
+
+    def test_invalid_in_memory_media_is_rejected_before_creating_outputs(self) -> None:
+        data = conversation()
+        data.messages[0].media = MediaAttachment("image", "available", "image/svg+xml", "PHN2Zy8+")
+        with self.assertRaises(ExportError):
+            rendering.write_exports(data, self.directory)
+        self.assertFalse(self.directory.exists())
 
     def test_contact_name_cannot_choose_output_paths(self) -> None:
         data = conversation()

@@ -13,11 +13,12 @@ from datetime import date
 from pathlib import Path
 from typing import Iterable
 
+from .media_payload import parse_media
 from .models import Conversation, ExportError, Message
 
 _FORMATS = frozenset({"html", "txt", "json"})
 _SCOPE = "仅包含提供的本地数据库中可读取的聊天记录，不能代表账号的全部历史记录。"
-_MEDIA_NOTE = "图片、语音、视频和附件仅保留文字标记；本导出不包含媒体文件。"
+_MEDIA_NOTE = "图片与表情在本机可恢复时嵌入 HTML / JSON，可离线展示；未找到或不支持的媒体保留文字提示。语音、视频和附件保留文字标记。"
 
 _CSS = """
 :root{color-scheme:light;--ink:#172d29;--muted:#657870;--accent:#167459;--paper:#f5f6f2;--line:#dce5df}
@@ -36,10 +37,11 @@ button{font-size:12px;background:#fff;color:var(--ink);border:1px solid #ccd9d0;
 .message-meta{display:flex;gap:10px;align-items:baseline;font-size:11px;color:var(--muted);max-width:100%;margin:0 4px 5px}.sender{font-weight:650;color:#38594d;overflow-wrap:anywhere}.message.self .message-meta{flex-direction:row-reverse}
 .bubble{min-width:65px;max-width:100%;background:#fff;border:1px solid var(--line);border-radius:3px 13px 13px 13px;padding:11px 15px;box-shadow:0 2px 3px #173c2210}.self .bubble{background:#e0f0e7;border-color:#c5dfcf;border-radius:13px 3px 13px 13px}
 .message-content,.transcript{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.transcript{margin-top:8px;padding-top:8px;border-top:1px solid #d7e4dc;font-size:13px;color:#456454}.type-label{font-size:10px;display:inline-block;margin-bottom:5px;color:var(--muted)}
+.media-toggle{display:block;max-width:100%;padding:0;margin-top:8px;border:0;background:transparent;border-radius:8px;overflow:hidden;cursor:zoom-in}.media-image{display:block;max-width:100%;width:auto;height:auto;max-height:340px;object-fit:contain;border-radius:8px}.media-toggle:not(.expanded){max-width:320px}.media-toggle.expanded{cursor:zoom-out}.media-toggle.expanded .media-image{max-height:none}.media-hint,.media-unavailable,.media-reason{font-size:11px;color:var(--muted);margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere}
 .warnings{border:1px solid #e6dbbc;background:#fffcf1;padding:12px 16px;border-radius:9px;font-size:12px;margin:22px 0;color:#775e2a}.warnings summary{cursor:pointer;font-weight:600}.warnings ul{margin:8px 0 0;padding-left:20px;overflow-wrap:anywhere}
 .empty{text-align:center;padding:70px 20px;color:var(--muted)}.empty strong{display:block;color:var(--ink);font-size:18px;margin-bottom:6px}.footer{border-top:1px solid var(--line);padding:20px 0 30px;color:var(--muted);font-size:11px}
 [hidden]{display:none!important}@media(max-width:680px){.shell{padding:0 16px}.masthead{padding-top:28px}.filters{grid-template-columns:1fr 1fr;gap:9px}.toolbar{padding-top:12px}.message{padding-right:5%}.message.self{padding-left:5%}.summary{gap:5px 16px}.bubble{padding:10px 12px}.message-meta{gap:7px}}
-@media print{body{background:white;font-size:11px}.shell{max-width:none;padding:0}.masthead{padding:0 0 15px}h1{font-size:24px}.toolbar,.actions,.footer,.warnings{display:none}.chat-log{max-width:none;padding-bottom:0}.message{break-inside:avoid;margin-bottom:12px}.bubble{box-shadow:none;border-color:#bbb}.day-title{break-after:avoid}.day{margin-top:15px}.self .bubble{background:#f1f7f3}.notice{font-size:10px}}
+@media print{body{background:white;font-size:11px}.shell{max-width:none;padding:0}.masthead{padding:0 0 15px}h1{font-size:24px}.toolbar,.actions,.footer,.warnings,.media-hint{display:none}.chat-log{max-width:none;padding-bottom:0}.message{break-inside:avoid;margin-bottom:12px}.bubble{box-shadow:none;border-color:#bbb}.day-title{break-after:avoid}.day{margin-top:15px}.self .bubble{background:#f1f7f3}.notice{font-size:10px}.media-toggle.expanded .media-image{max-height:340px}}
 """
 
 # User data is never interpolated into this script. All text comes from escaped
@@ -99,6 +101,13 @@ _JS = """
   document.getElementById('print').addEventListener('click', () => {
     clearTimeout(timer); filter(); window.print();
   });
+  for (const button of document.querySelectorAll('.media-toggle')) {
+    button.addEventListener('click', () => {
+      const expanded = button.classList.toggle('expanded');
+      button.setAttribute('aria-expanded', String(expanded));
+      button.setAttribute('aria-label', expanded ? '缩小图片' : '放大图片');
+    });
+  }
   filter();
 })();
 """
@@ -127,6 +136,37 @@ def _render_json(conversation: Conversation) -> str:
     return json.dumps(conversation.to_dict(), ensure_ascii=False, indent=2, allow_nan=False) + "\n"
 
 
+def _media_reason(message: Message) -> str:
+    if message.media is not None:
+        media = message.media
+        if media.reason:
+            return media.reason
+        if media.status == "missing":
+            return "本机未找到可恢复的媒体文件。"
+        if media.status == "unsupported":
+            return "此媒体格式暂不支持展示。"
+    elif (message.type_code & 0xFFFFFFFF) in {3, 47}:
+        return "此记录未附带可展示的图片文件。"
+    return ""
+
+
+def _media_html(message: Message) -> str:
+    media = message.media
+    reason = _media_reason(message)
+    if media is None or media.status != "available":
+        return f'<div class="media-unavailable">{_escape(reason)}</div>' if reason else ""
+    # write_exports validates the MIME, strict Base64, and raster bytes before
+    # any output is staged; paths and remote URLs cannot enter this attribute.
+    source = f"data:{media.mime_type};base64,{media.data_base64}"
+    label = "动画表情" if media.kind == "sticker" else "聊天图片"
+    reason_html = f'<div class="media-reason">{_escape(reason)}</div>' if reason else ""
+    return (
+        '<button class="media-toggle" type="button" aria-expanded="false" aria-label="放大图片">'
+        f'<img class="media-image" src="{_escape(source)}" alt="{label}" loading="lazy" decoding="async">'
+        '</button><div class="media-hint">点击图片放大 / 缩小</div>' + reason_html
+    )
+
+
 def _render_txt(conversation: Conversation) -> str:
     data = conversation.to_dict()
     lines = [
@@ -145,6 +185,8 @@ def _render_txt(conversation: Conversation) -> str:
     for message in conversation.messages:
         lines.append(f"[{message.time}] {message.sender}")
         lines.append(message.content)
+        if reason := _media_reason(message):
+            lines.append("[媒体提示] " + reason)
         if transcript := _transcript(message):
             lines.append(f"[语音转写] {transcript}")
         lines.append("")
@@ -186,7 +228,7 @@ def _render_html(conversation: Conversation) -> str:
                 f'<div class="message-meta"><span class="sender">{_escape(message.sender)}</span>'
                 f'<time>{_escape(message.time)}</time></div>'
                 f'<div class="bubble">{type_label}<div class="message-content">{_escape(message.content)}</div>'
-                f'{transcript_html}</div></article>'
+                f'{_media_html(message)}{transcript_html}</div></article>'
             )
         sections.append(
             f'<section class="day"><h2 class="day-title"><span>{day or "未标注日期"}</span></h2>'
@@ -202,7 +244,7 @@ def _render_html(conversation: Conversation) -> str:
     csp = (
         "default-src 'none'; "
         f"script-src {_hash_csp(_JS)}; style-src {_hash_csp(_CSS)}; "
-        "connect-src 'none'; img-src 'none'; font-src 'none'; media-src 'none'; "
+        "connect-src 'none'; img-src data:; font-src 'none'; media-src 'none'; "
         "object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
     )
     count = len(conversation.messages)
@@ -339,6 +381,8 @@ def write_exports(
     renderers = {"html": _render_html, "txt": _render_txt, "json": _render_json}
     staged: dict[Path, Path] = {}
     try:
+        for message in conversation.messages:
+            message.media = parse_media(message.media)
         directory.mkdir(parents=True, exist_ok=True)
         _check_destinations(targets.values(), overwrite)
         for kind, target in targets.items():

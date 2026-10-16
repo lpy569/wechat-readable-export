@@ -40,6 +40,35 @@ class CliTests(unittest.TestCase):
             converted = load_json(root / "converted" / "chat.json")
             self.assertEqual([m.content for m in original.messages], [m.content for m in converted.messages])
             self.assertEqual(len(original.messages), 10)
+            self.assertEqual([m.media for m in original.messages], [m.media for m in converted.messages])
+            self.assertEqual(original.messages[2].media.mime_type, "image/png")
+            self.assertEqual(original.messages[8].media.mime_type, "image/gif")
+            self.assertIn("data:image/gif;base64,", (root / "converted" / "chat.html").read_text(encoding="utf-8"))
+
+    def test_legacy_json_without_media_fields_stays_compatible(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            data = demo_conversation().to_dict()
+            for message in data["messages"]:
+                message.pop("media", None)
+            path = Path(temporary) / "legacy.json"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            loaded = load_json(path)
+            self.assertTrue(all(message.media is None for message in loaded.messages))
+
+    def test_import_rejects_untrusted_media_instead_of_rendering_it(self):
+        attacks = [
+            {"kind": "image", "status": "available", "mime_type": "image/svg+xml", "data_base64": "PHN2Zy8+"},
+            {"kind": "sticker", "status": "available", "mime_type": "image/gif", "data_base64": "https://invalid.test/a.gif"},
+            {"kind": "image", "status": "missing", "reason": {}},
+        ]
+        for media in attacks:
+            with self.subTest(media=media), tempfile.TemporaryDirectory() as temporary:
+                data = demo_conversation().to_dict()
+                data["messages"][0]["media"] = media
+                path = Path(temporary) / "input.json"
+                path.write_text(json.dumps(data), encoding="utf-8")
+                with self.assertRaises(ExportError):
+                    load_json(path)
 
     def test_unknown_json_schema_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

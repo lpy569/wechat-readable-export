@@ -26,6 +26,17 @@ class Contact:
 
 
 @dataclass
+class MediaAttachment:
+    """Optional embedded raster media, independent of the original account files."""
+
+    kind: str
+    status: str = "missing"
+    mime_type: str | None = None
+    data_base64: str | None = None
+    reason: str | None = None
+
+
+@dataclass
 class Message:
     timestamp: int | float
     time: str
@@ -41,6 +52,7 @@ class Message:
     server_id: int | str | None = None
     sort_seq: int = 0
     transcript: str | None = None
+    media: MediaAttachment | None = None
 
 
 @dataclass

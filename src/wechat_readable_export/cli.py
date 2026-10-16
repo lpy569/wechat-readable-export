@@ -48,6 +48,8 @@ def date_range(start: str | None, end: str | None) -> tuple[datetime | None, dat
 def load_json(path: Path) -> Conversation:
     """Only accept this project's schema; never execute imported content."""
     try:
+        from .media_payload import parse_media
+
         def reject_constant(value: str):
             raise ValueError(f"不允许 JSON 非有限数值：{value}")
         data = json.loads(path.read_text(encoding="utf-8-sig"), parse_constant=reject_constant)
@@ -69,6 +71,7 @@ def load_json(path: Path) -> Conversation:
             if not isinstance(item, dict):
                 raise ValueError("消息必须是对象")
             msg = Message(**{k: v for k, v in item.items() if k in names})
+            msg.media = parse_media(msg.media)
             if not all(isinstance(v, str) for v in (msg.time, msg.sender, msg.sender_status, msg.type, msg.content)):
                 raise ValueError("消息文字字段无效")
             if msg.transcript is not None and not isinstance(msg.transcript, str):
@@ -147,6 +150,8 @@ def parser() -> argparse.ArgumentParser:
     target.add_argument("--contact-id", type=nonblank, help="contacts 命令返回的唯一 username")
     export.add_argument("--start", type=nonblank, help="起始日期 YYYY-MM-DD（北京时间，包含当天）")
     export.add_argument("--end", type=nonblank, help="结束日期 YYYY-MM-DD（北京时间，包含当天）")
+    export.add_argument("--no-media", action="store_true", help="只导出文字和媒体标记，不读取图片或表情文件")
+    export.add_argument("--download-stickers", action="store_true", help="明确允许从微信 CDN 下载本地缺失的表情；图片仍只读取本地文件")
     demo = sub.add_parser("demo", help="生成虚构聊天示例，无需微信，支持跨平台")
     convert = sub.add_parser("convert", help="将本项目导出的 JSON 重新生成为可阅读文件")
     convert.add_argument("input", type=nonblank_path, help="本项目 schema_version=1 的 chat.json")
@@ -174,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(list_accounts(args.data_dir), ensure_ascii=False, indent=2))
                 return 0
             bounds = date_range(args.start, args.end) if args.command == "export" else (None, None)
+            if args.command == "export" and args.no_media and args.download_stickers:
+                raise ExportError("--no-media 不能与 --download-stickers 同时使用。")
             def progress(message: str) -> None:
                 print(message, file=sys.stderr, flush=True)
             with LocalReader(args.data_dir, args.account, progress=progress) as reader:
@@ -191,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
                 from .parsing import build_conversation
                 metadata = {**metadata, "date_filter": {"start_inclusive": args.start, "end_inclusive": args.end}}
                 conversation = build_conversation(contact, self_username, rows, start=bounds[0], end=bounds[1], metadata=metadata)
+                if not args.no_media:
+                    reader.attach_media(conversation, rows, download_stickers=args.download_stickers)
             if not conversation.messages:
                 raise ExportError("指定会话或日期范围内没有本地消息，未写入导出文件。")
         from .rendering import write_exports

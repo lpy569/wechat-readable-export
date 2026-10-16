@@ -473,6 +473,32 @@ def _read_message_shards(shards: list[tuple[str, Path]], contact_id: str) -> lis
     return rows
 
 
+def _read_image_resource_hashes(path: Path, contact_id: str) -> dict[int, list[str]]:
+    """Resource IDs are scoped to this chat; ambiguous hashes stay ambiguous."""
+    from .local_media import extract_resource_hashes
+    connection = _connect_readonly(path)
+    try:
+        chat_columns = {str(r[1]).lower() for r in connection.execute('PRAGMA table_info("ChatName2Id")')}
+        info_columns = {str(r[1]).lower() for r in connection.execute('PRAGMA table_info("MessageResourceInfo")')}
+        if "user_name" not in chat_columns or not {"chat_id", "message_local_id", "packed_info"}.issubset(info_columns):
+            raise ExportError("图片资源数据库结构不受支持。")
+        chats = connection.execute('SELECT rowid FROM "ChatName2Id" WHERE user_name=?', (contact_id,)).fetchall()
+        if len(chats) != 1:
+            return {}
+        result: dict[int, list[str]] = {}
+        for row in connection.execute('SELECT message_local_id, packed_info FROM "MessageResourceInfo" WHERE chat_id=?',
+                                      (chats[0][0],)):
+            local_id = _sender_id(row[0])
+            if local_id is not None:
+                hashes = extract_resource_hashes(row[1])
+                result[local_id] = list(dict.fromkeys(result.get(local_id, []) + hashes))
+        return result
+    except sqlite3.DatabaseError as exc:
+        raise ExportError("图片资源数据库无法读取。") from exc
+    finally:
+        connection.close()
+
+
 class _LocalReader:
     def __init__(self, account_path: Path, workdir: Path, progress: Callable | None = None):
         self.account_path = account_path
@@ -563,6 +589,43 @@ class _LocalReader:
                     "snapshots": dict(self._snapshot_metadata),
                     "self_identity_confirmed": bool(self_username)}
         return matches[0], self_username, raw, metadata
+
+    def attach_media(self, conversation, rows: list[dict], *, download_stickers: bool = False):
+        """Optional media failures remain visible without losing valid messages."""
+        self._ensure_open()
+        from .local_media import LocalMediaResolver
+        resource_hashes = {}
+        resource_status = "not_needed"
+        if any(message.type_code & 0xFFFFFFFF == 3 for message in conversation.messages):
+            resource_status = "missing"
+            for resource_path in (self.storage / "message" / "message_resource.db",
+                                  self.storage / "message_resource.db"):
+                if resource_path.is_file():
+                    try:
+                        resource_hashes = _read_image_resource_hashes(self._snapshot(resource_path),
+                                                                     conversation.contact.username)
+                        resource_status = "read"
+                    except (ExportError, OSError):
+                        resource_status = "unavailable"
+                        conversation.warnings.append("图片资源数据库无法校验或读取，图片仅按明确的消息线索和本地缩略图查找。")
+                    break
+        def keys(samples):
+            from .image_codec import find_image_key
+            self.progress("正在只读查找图片解密材料…")
+            try:
+                return find_image_key(_weixin_pids(), samples, progress=self.progress)
+            except (ExportError, OSError, ValueError):
+                return None, None
+        self.progress("正在读取图片和表情…" + ("（允许从微信 CDN 获取缺失表情）" if download_stickers else "（仅本地文件）"))
+        resolver = LocalMediaResolver(self.account_path, conversation.contact.username,
+                                      resource_hashes=resource_hashes, key_provider=keys,
+                                      download_stickers=download_stickers)
+        try:
+            resolver.attach(conversation, rows)
+        finally:
+            resolver.close()
+        conversation.metadata["media_resource_status"] = resource_status
+        conversation.metadata["snapshots"] = dict(self._snapshot_metadata)
 
     def close(self):
         self._keys.clear()
