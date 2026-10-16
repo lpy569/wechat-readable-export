@@ -22,6 +22,10 @@ scanning, and no UI, key files, monitoring or persistent caches. `wxgf_codec.py`
 uses the same source's Annex B HEVC extraction approach, adding bounded local
 FFmpeg decoding and raster validation. Existing memory access is query/read only.
 
+`local_voice.py` uses the same upstream module's per-shard `Name2Id` and
+`VoiceInfo` layout as a reference, with selected-message lookup, strict byte and
+identity validation, conflict detection, and read-only temporary snapshots.
+
 The surrounding account selection, snapshot/WAL validation, CLI, message model,
 rendering and tests in this repository are maintained independently. Changes
 to upstream layout anchors must be reviewed and validated before updating the
@@ -54,6 +58,7 @@ distribution.
 - `zstandard`: https://github.com/indygreg/python-zstandard — BSD-3-Clause
 - `Pillow`: https://github.com/python-pillow/Pillow — MIT-CMU (see the installed distribution for bundled-library licenses)
 - `imageio-ffmpeg`: https://github.com/imageio/imageio-ffmpeg — BSD-2-Clause for the Python wrapper. Its separately installed wheel includes an FFmpeg executable; the Windows 0.6.0 wheel's FFmpeg 7.1 build reports GPL-3.0-or-later. See the dependency's bundled license and https://ffmpeg.org/legal.html for executable licensing and source requirements. This repository does not copy that executable into its source distribution.
+- `silk-python` (`pysilk`): https://github.com/synodriver/pysilk — the package metadata declares BSD. Its native codec comes from https://github.com/kn007/silk-v3-decoder (MIT wrapper) and the Skype SILK SDK (BSD-style terms in the SDK headers, including https://github.com/kn007/silk-v3-decoder/blob/master/silk/interface/SKP_Silk_SDK_API.h). `audio_codec.py` calls the separately installed SDK through the package's CFFI interface; this repository does not copy the SDK sources or native binary.
 
 These dependencies are installed separately by the package manager. Their own
 distributed license files govern their code and any bundled native libraries.

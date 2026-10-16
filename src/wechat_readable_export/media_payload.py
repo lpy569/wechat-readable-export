@@ -1,4 +1,4 @@
-"""Validate portable image payloads without opening files or using the network."""
+"""Validate portable image/audio payloads without files or network access."""
 
 from __future__ import annotations
 
@@ -10,13 +10,14 @@ import warnings
 
 from PIL import Image, UnidentifiedImageError
 
+from .audio_codec import MAX_WAV_BYTES, validate_wav
 from .models import MediaAttachment
 
 MAX_MEDIA_BYTES = 32 * 1024 * 1024
 MAX_IMAGE_PIXELS = 40_000_000
 MAX_ANIMATION_FRAMES = 500
 MAX_ANIMATION_PIXELS = 160_000_000
-_KINDS = frozenset({"image", "sticker"})
+_KINDS = frozenset({"image", "sticker", "audio"})
 _STATUSES = frozenset({"available", "missing", "unsupported"})
 _FORMATS = {"image/jpeg": "JPEG", "image/png": "PNG", "image/gif": "GIF", "image/webp": "WEBP"}
 _FIELDS = frozenset({"kind", "status", "mime_type", "data_base64", "reason"})
@@ -70,15 +71,19 @@ def _validate_image(data: bytes, mime_type: str) -> None:
 
 
 def make_media(data: bytes, kind: str = "image", reason: str | None = None) -> MediaAttachment:
-    """Embed a supported, verified raster; invalid input raises ValueError."""
+    """Embed a verified raster or PCM WAV; invalid input raises ValueError."""
     if not isinstance(kind, str) or kind not in _KINDS or not isinstance(data, bytes):
         raise ValueError("媒体 kind 或二进制数据无效")
     if reason is not None and not isinstance(reason, str):
         raise ValueError("媒体 reason 必须为字符串或 null")
-    mime_type = sniff_mime(data)
-    if mime_type is None:
-        raise ValueError("仅支持 JPEG、PNG、GIF 和 WebP 图片")
-    _validate_image(data, mime_type)
+    if kind == "audio":
+        validate_wav(data)
+        mime_type = "audio/wav"
+    else:
+        mime_type = sniff_mime(data)
+        if mime_type is None:
+            raise ValueError("仅支持 JPEG、PNG、GIF 和 WebP 图片")
+        _validate_image(data, mime_type)
     return MediaAttachment(kind, "available", mime_type, base64.b64encode(data).decode("ascii"), reason)
 
 
@@ -91,7 +96,7 @@ def parse_media(value: dict | MediaAttachment | None) -> MediaAttachment | None:
     if not isinstance(value, dict) or set(value) - _FIELDS:
         raise ValueError("media 必须为受支持的媒体对象或 null")
     if not isinstance(value.get("kind"), str) or value["kind"] not in _KINDS:
-        raise ValueError("media.kind 必须为 image 或 sticker")
+        raise ValueError("media.kind 必须为 image、sticker 或 audio")
     status = value.get("status", "missing")
     if not isinstance(status, str) or status not in _STATUSES:
         raise ValueError("media.status 无效")
@@ -101,19 +106,24 @@ def parse_media(value: dict | MediaAttachment | None) -> MediaAttachment | None:
     media = MediaAttachment(**value)
     if status != "available":
         if media.mime_type is not None or media.data_base64 is not None:
-            raise ValueError("缺失或不受支持的媒体不能附带图片数据")
+            raise ValueError("缺失或不受支持的媒体不能附带数据")
         return media
-    if media.mime_type not in _FORMATS or not media.data_base64:
-        raise ValueError("可用媒体需要受支持的 MIME 和 Base64 图片数据")
+    supported_mime = media.mime_type == "audio/wav" if media.kind == "audio" else media.mime_type in _FORMATS
+    if not supported_mime or not media.data_base64:
+        raise ValueError("可用媒体需要与 kind 一致的 MIME 和 Base64 数据")
     # Bound encoded size before decoding; strict base64 excludes attribute
     # delimiters, URL prefixes, whitespace, and non-ASCII input.
-    if len(media.data_base64) > 4 * ((MAX_MEDIA_BYTES + 2) // 3):
-        raise ValueError("媒体文件超过 32 MiB")
+    limit = MAX_WAV_BYTES if media.kind == "audio" else MAX_MEDIA_BYTES
+    if len(media.data_base64) > 4 * ((limit + 2) // 3):
+        raise ValueError("媒体文件超过大小限制")
     try:
         decoded = base64.b64decode(media.data_base64, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise ValueError("media.data_base64 无效") from exc
     if base64.b64encode(decoded).decode("ascii") != media.data_base64:
         raise ValueError("media.data_base64 不是规范 Base64")
-    _validate_image(decoded, media.mime_type)
+    if media.kind == "audio":
+        validate_wav(decoded)
+    else:
+        _validate_image(decoded, media.mime_type)
     return media

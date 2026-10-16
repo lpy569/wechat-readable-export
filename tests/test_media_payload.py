@@ -5,6 +5,7 @@ from dataclasses import asdict
 import io
 import unittest
 from unittest.mock import patch
+import wave
 
 from PIL import Image, features
 
@@ -23,6 +24,35 @@ def raster(format: str = "PNG", *, animated: bool = False) -> bytes:
 
 
 class MediaPayloadTests(unittest.TestCase):
+    def test_audio_wav_roundtrip_and_kind_mime_must_agree(self):
+        output = io.BytesIO()
+        with wave.open(output, "wb") as voice:
+            voice.setnchannels(1)
+            voice.setsampwidth(2)
+            voice.setframerate(24000)
+            voice.writeframes(b"\0\0" * 480)
+        data = output.getvalue()
+        media = media_payload.make_media(data, "audio")
+        self.assertEqual(media.mime_type, "audio/wav")
+        self.assertEqual(base64.b64decode(media.data_base64), data)
+        self.assertEqual(media_payload.parse_media(asdict(media)), media)
+        self.assertEqual(media_payload.parse_media(MediaAttachment("audio")), MediaAttachment("audio"))
+        for kind in ("image", "sticker"):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                media_payload.make_media(data, kind)
+            with self.assertRaises(ValueError):
+                media_payload.parse_media({**asdict(media), "kind": kind})
+        with self.assertRaises(ValueError):
+            media_payload.make_media(raster(), "audio")
+        image = asdict(media_payload.make_media(raster()))
+        with self.assertRaises(ValueError):
+            media_payload.parse_media({**image, "kind": "audio"})
+        for change in ({"mime_type": "audio/mpeg"}, {"mime_type": "image/png"},
+                       {"data_base64": media.data_base64 + "\n"},
+                       {"data_base64": base64.b64encode(data[:-1]).decode()}):
+            with self.subTest(change=list(change)), self.assertRaises(ValueError):
+                media_payload.parse_media({**asdict(media), **change})
+
     def test_supported_rasters_roundtrip_and_keep_animation_bytes(self):
         formats = [("PNG", "image/png"), ("JPEG", "image/jpeg"), ("GIF", "image/gif")]
         if features.check("webp"):

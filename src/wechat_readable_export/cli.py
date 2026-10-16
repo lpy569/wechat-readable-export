@@ -150,7 +150,7 @@ def parser() -> argparse.ArgumentParser:
     target.add_argument("--contact-id", type=nonblank, help="contacts 命令返回的唯一 username")
     export.add_argument("--start", type=nonblank, help="起始日期 YYYY-MM-DD（北京时间，包含当天）")
     export.add_argument("--end", type=nonblank, help="结束日期 YYYY-MM-DD（北京时间，包含当天）")
-    export.add_argument("--no-media", action="store_true", help="只导出文字和媒体标记，不读取图片或表情文件")
+    export.add_argument("--no-media", action="store_true", help="只导出文字和媒体标记，不读取图片、表情或语音")
     export.add_argument("--download-stickers", action="store_true", help="明确允许从微信 CDN 下载本地缺失的表情；图片仍只读取本地文件")
     demo = sub.add_parser("demo", help="生成虚构聊天示例，无需微信，支持跨平台")
     convert = sub.add_parser("convert", help="将本项目导出的 JSON 重新生成为可阅读文件")

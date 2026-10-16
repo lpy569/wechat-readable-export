@@ -24,13 +24,14 @@ import time
 from contextlib import contextmanager
 from typing import Callable, Iterator
 
-from .models import Contact, ExportError
+from .models import Contact, ExportError, MediaAttachment
 
 PAGE_SIZE = 4096
 RESERVE_SIZE = 80
 WAL_HEADER_SIZE = 32
 WAL_FRAME_SIZE = 24 + PAGE_SIZE
 MESSAGE_FILE = re.compile(r"message_([0-9]+)\.db\Z")
+VOICE_FILE = re.compile(r"media_([0-9]+)\.db\Z")
 WANTED_COLUMNS = (
     "local_id", "local_type", "server_id", "real_sender_id", "create_time",
     "message_content", "source", "compress_content", "packed_info_data", "sort_seq",
@@ -387,6 +388,16 @@ def _message_databases(storage: Path) -> list[Path]:
                   key=lambda p: int(MESSAGE_FILE.fullmatch(p.name).group(1)))
 
 
+def _voice_databases(storage: Path) -> list[Path]:
+    folder = storage / "message"
+    if not folder.is_dir() or not folder.resolve().is_relative_to(storage.resolve()):
+        return []
+    return sorted((p for p in folder.iterdir()
+                   if p.is_file() and not p.is_symlink() and VOICE_FILE.fullmatch(p.name)
+                   and p.resolve().is_relative_to(folder.resolve())),
+                  key=lambda p: int(VOICE_FILE.fullmatch(p.name).group(1)))
+
+
 def _read_contacts(path: Path, search: str = "") -> list[Contact]:
     connection = _connect_readonly(path)
     try:
@@ -636,6 +647,116 @@ class _LocalReader:
             resolver.close()
         conversation.metadata["media_resource_status"] = resource_status
         conversation.metadata["snapshots"] = dict(self._snapshot_metadata)
+        self.attach_voice(conversation)
+
+    def attach_voice(self, conversation):
+        """Attach only this conversation's local voice records; never download."""
+        self._ensure_open()
+        voices = [m for m in conversation.messages if m.type_code & 0xFFFFFFFF == 34]
+        if not voices:
+            return
+        from collections import Counter
+        from .audio_codec import decode_voice
+        from .local_voice import canonical_server_id, read_voice_blobs
+        from .media_payload import make_media
+
+        self.progress("正在只读恢复本地语音…")
+        wanted = {sid for m in voices if (sid := canonical_server_id(m.server_id)) is not None}
+        discovery_failed = False
+        try:
+            files = _voice_databases(self.storage) if wanted else []
+        except OSError:
+            files, discovery_failed = [], True
+        shards, failures = [], 0
+        for source in files:
+            try:
+                shards.append((self._relative(source), self._snapshot(source)))
+            except (ExportError, OSError):
+                failures += 1
+        blobs, diagnostics = read_voice_blobs(shards, conversation.contact.username, wanted)
+        try:
+            changed = bool(wanted) and files != _voice_databases(self.storage)
+        except OSError:
+            changed, discovery_failed = False, True
+        incomplete = bool(failures or diagnostics.get("shards_unreadable", 0)
+                          or diagnostics.get("shards_unsupported", 0))
+        if not wanted:
+            resource_status = "no_valid_ids"
+        elif discovery_failed:
+            resource_status = "unavailable"
+        elif changed:
+            resource_status = "changed"
+        elif not files:
+            resource_status = "missing"
+        elif not diagnostics.get("shards_read", 0):
+            resource_status = "unavailable"
+        elif incomplete:
+            resource_status = "partial"
+        else:
+            resource_status = "read"
+        if failures:
+            conversation.warnings.append("部分语音数据库无法校验或读取；未取得的语音保留原因提示。")
+        if discovery_failed:
+            conversation.warnings.append("无法读取本地语音目录；语音保留原因提示。")
+        conversation.warnings.extend(diagnostics.get("warnings", []))
+
+        descriptions = {
+            "missing_session": "本地语音库中没有此会话的音频索引。",
+            "missing_blob": "本机未找到对应语音，请先在微信中播放后重新导出。",
+            "empty_blob": "本地语音数据为空，请先在微信中播放后重新导出。",
+            "invalid_blob": "本地语音数据类型无效。",
+            "oversized_blob": "本地语音文件超过解码大小限制。",
+            "resource_limit": "所选会话的语音数据超过读取总量限制，未继续读取此音频。",
+            "ambiguous_blob": "同一语音存在冲突的本地数据，未猜测选取。",
+            "unavailable_shards": "部分语音数据库无法读取，无法确认这条语音是否保存在本机。",
+        }
+        cache = {}
+        counts, issues = Counter(), Counter()
+        try:
+            for index, message in enumerate(voices, 1):
+                sid = canonical_server_id(message.server_id)
+                if discovery_failed:
+                    media = MediaAttachment("audio", reason="无法读取本地语音目录，无法确认音频是否保存在本机。")
+                elif changed:
+                    media = MediaAttachment("audio", reason="读取过程中语音分片发生变化，请重新导出。")
+                elif sid is None:
+                    media = MediaAttachment("audio", reason="语音缺少有效服务器消息 ID，无法可靠匹配音频。")
+                elif sid in cache:
+                    media = cache[sid]
+                elif sid in blobs:
+                    try:
+                        media = make_media(decode_voice(blobs[sid]), "audio")
+                    except (OSError, ValueError) as exc:
+                        media = MediaAttachment("audio", "unsupported", reason=str(exc))
+                    cache[sid] = media
+                else:
+                    code = diagnostics.get("issues", {}).get(sid, "missing_blob")
+                    if incomplete and code in {"missing_blob", "missing_session", "empty_blob"}:
+                        code = "unavailable_shards"
+                    reason = descriptions.get(code, "本机未找到可恢复的语音文件。")
+                    if not files:
+                        reason = "本机没有语音媒体数据库，无法恢复音频。"
+                    media = MediaAttachment("audio", "unsupported" if code in {
+                        "invalid_blob", "oversized_blob", "ambiguous_blob", "resource_limit"} else "missing", reason=reason)
+                    cache[sid] = media
+                message.media = media
+                counts[f"audio_{media.status}"] += 1
+                if media.status != "available":
+                    issues[media.reason or "语音不可用"] += 1
+                if index == 1 or index % 20 == 0 or index == len(voices):
+                    self.progress(f"已处理语音 {index} / {len(voices)} 条。")
+        finally:
+            cache.clear()
+            blobs.clear()
+        conversation.metadata.setdefault("media_statistics", {}).update(counts)
+        conversation.metadata["voice_statistics"] = {
+            **dict(counts), "shards_checked": len(files),
+            "shards_read": diagnostics.get("shards_read", 0),
+            "format": "audio/wav; embedded PCM16 mono 24 kHz; local only",
+        }
+        conversation.metadata["voice_resource_status"] = resource_status
+        conversation.metadata["snapshots"] = dict(self._snapshot_metadata)
+        conversation.warnings.extend(f"{reason}：{count} 条。" for reason, count in sorted(issues.items()))
 
     def close(self):
         self._keys.clear()

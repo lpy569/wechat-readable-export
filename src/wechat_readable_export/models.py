@@ -27,7 +27,7 @@ class Contact:
 
 @dataclass
 class MediaAttachment:
-    """Optional embedded raster media, independent of the original account files."""
+    """Optional embedded raster/audio media, independent of account files."""
 
     kind: str
     status: str = "missing"

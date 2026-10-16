@@ -3,6 +3,9 @@
 from datetime import datetime
 from functools import lru_cache
 import io
+import math
+import struct
+import wave
 
 from .media_payload import make_media
 from .models import CHINA_TIME, Contact, Conversation, Message
@@ -48,6 +51,27 @@ def _demo_image_bytes() -> tuple[bytes, bytes]:
     return png.getvalue(), gif.getvalue()
 
 
+@lru_cache(maxsize=1)
+def _demo_audio_bytes() -> bytes:
+    """A quiet, original two-note tone; no real speech or recording is used."""
+    rate = 24_000
+    frames = bytearray()
+    for index in range(rate):
+        frequency = 440 if index < rate // 2 else 554.37
+        # Fade each note at its edges so the demo has no abrupt clicks.
+        note_index = index % (rate // 2)
+        envelope = min(1, note_index / 400, (rate // 2 - note_index - 1) / 400)
+        sample = int(3200 * envelope * math.sin(2 * math.pi * frequency * index / rate))
+        frames.extend(struct.pack("<h", sample))
+    stream = io.BytesIO()
+    with wave.open(stream, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(frames)
+    return stream.getvalue()
+
+
 def demo_conversation() -> Conversation:
     contact = Contact("demo_friend", "林同学", "林同学")
     samples = [
@@ -66,12 +90,19 @@ def demo_conversation() -> Conversation:
     picture, sticker = _demo_image_bytes()
     messages = []
     for i, (time, mine, code, content) in enumerate(samples, 1):
+        media = None
+        if code == 3:
+            media = make_media(picture)
+        elif code == 47:
+            media = make_media(sticker, "sticker")
+        elif code == 34:
+            media = make_media(_demo_audio_bytes(), "audio")
         messages.append(Message(
             timestamp=int(datetime.strptime(time, "%Y-%m-%d %H:%M:%S").replace(tzinfo=CHINA_TIME).timestamp()),
             time=time, sender="我" if mine else contact.display_name,
             sender_username="demo_self" if mine else contact.username,
             sender_status="resolved", is_self=mine, type=types[code], type_code=code,
             content=content, source_db="demo", local_id=i, server_id=f"demo-{i}", sort_seq=i,
-            media=make_media(picture) if code == 3 else make_media(sticker, "sticker") if code == 47 else None,
+            media=media,
         ))
     return Conversation(contact, messages, metadata={"demo": True, "note": "全部内容为虚构演示数据。"})

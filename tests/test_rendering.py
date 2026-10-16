@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 import json
 import tempfile
 import unittest
+import wave
 from html.parser import HTMLParser
 from pathlib import Path
 from unittest.mock import patch
 
 from wechat_readable_export import rendering
-from wechat_readable_export.demo import demo_conversation
+from wechat_readable_export.cli import load_json
+from wechat_readable_export.demo import _demo_audio_bytes, demo_conversation
+from wechat_readable_export.media_payload import make_media
 from wechat_readable_export.models import Contact, Conversation, ExportError, MediaAttachment, Message
 
 
@@ -119,6 +123,7 @@ class RenderingTests(unittest.TestCase):
         self.assertIn("default-src 'none'", policy)
         self.assertIn("connect-src 'none'", policy)
         self.assertIn("img-src data:", policy)
+        self.assertIn("media-src data:", policy)
         self.assertIn("form-action 'none'", policy)
         self.assertNotIn("unsafe-inline", policy)
         for tag in ("script", "style"):
@@ -160,6 +165,80 @@ class RenderingTests(unittest.TestCase):
         self.assertIn(reason, ''.join(document.text))
         self.assertIn("此记录未附带可展示的图片文件。", source)
         self.assertIn("[媒体提示] " + reason, paths["txt"].read_text(encoding="utf-8"))
+
+    def test_voice_is_embedded_with_controls_and_survives_json_conversion(self) -> None:
+        data = conversation()
+        audio = _demo_audio_bytes()
+        data.messages[1].media = make_media(audio, "audio")
+        paths = rendering.write_exports(data, self.directory)
+        source = paths["html"].read_text(encoding="utf-8")
+        document = Document(source)
+        players = [attrs for tag, attrs in document.tags if tag == "audio"]
+        self.assertEqual(len(players), 1)
+        player = players[0]
+        self.assertIn("controls", player)
+        self.assertEqual(player["preload"], "none")
+        self.assertEqual(player["aria-label"], "聊天语音")
+        self.assertNotIn("autoplay", player)
+        self.assertNotIn("loop", player)
+        self.assertEqual(player["src"], "data:audio/wav;base64," + base64.b64encode(audio).decode("ascii"))
+        with wave.open(io.BytesIO(base64.b64decode(player["src"].split(",", 1)[1])), "rb") as decoded:
+            self.assertEqual((decoded.getnchannels(), decoded.getsampwidth(), decoded.getframerate()), (1, 2, 24_000))
+            self.assertEqual(decoded.getnframes(), 24_000)
+        voice_article = source.split('class="message self"', 1)[1].split('</article>', 1)[0]
+        self.assertNotIn('class="type-label"', voice_article)
+        self.assertNotIn('class="message-content"', voice_article)
+        self.assertIn("语音转写：合成转写文本。", voice_article)
+        self.assertIn("[语音]", paths["txt"].read_text(encoding="utf-8"))
+        loaded = load_json(paths["json"])
+        self.assertEqual(loaded.messages[1].content, "[语音]")
+        self.assertEqual(loaded.messages[1].media, data.messages[1].media)
+        converted = rendering.write_exports(loaded, self.directory / "converted")
+        self.assertIn(player["src"], converted["html"].read_text(encoding="utf-8"))
+
+    def test_voice_caption_and_transcript_remain_literal_when_audio_is_available(self) -> None:
+        data = conversation()
+        data.messages[1].content = '[语音] <b>一段说明</b> & "正文"'
+        data.messages[1].transcript = '<script>alert("bad")</script> & 合成转写'
+        data.messages[1].media = make_media(_demo_audio_bytes(), "audio")
+        path = rendering.write_exports(data, self.directory, ("html",))["html"]
+        source = path.read_text(encoding="utf-8")
+        document = Document(source)
+        self.assertIn(data.messages[1].content, ''.join(document.text))
+        self.assertIn(data.messages[1].transcript, ''.join(document.text))
+        self.assertEqual(sum(tag == "script" for tag, _ in document.tags), 1)
+        self.assertFalse(any(tag == "b" for tag, _ in document.tags))
+        self.assertIn('class="message-content"', source)
+
+    def test_unavailable_voice_preserves_placeholder_and_escapes_reason(self) -> None:
+        reason = '<audio src="https://invalid.test" autoplay onplay="alert(1)"> & 未找到'
+        for status in ("missing", "unsupported"):
+            with self.subTest(status=status):
+                data = conversation()
+                data.messages[1].media = MediaAttachment("audio", status, reason=reason)
+                paths = rendering.write_exports(data, self.directory / status)
+                source = paths["html"].read_text(encoding="utf-8")
+                document = Document(source)
+                self.assertFalse(any(tag == "audio" for tag, _ in document.tags))
+                self.assertIn("[语音]", ''.join(document.text))
+                self.assertIn(reason, ''.join(document.text))
+                self.assertIn("语音转写：合成转写文本。", source)
+                self.assertIn("[媒体提示] " + reason, paths["txt"].read_text(encoding="utf-8"))
+
+    def test_legacy_voice_without_payload_still_has_readable_explanation(self) -> None:
+        paths = rendering.write_exports(conversation(), self.directory)
+        source = paths["html"].read_text(encoding="utf-8")
+        self.assertNotIn('<audio ', source)
+        self.assertIn("此记录未附带可播放的语音文件。", source)
+        self.assertIn("[语音]", source)
+
+    def test_demo_voice_is_synthetic_and_offline(self) -> None:
+        data = demo_conversation()
+        voice = next(message for message in data.messages if message.type_code == 34)
+        self.assertEqual(voice.media.kind, "audio")
+        self.assertEqual(voice.media.mime_type, "audio/wav")
+        self.assertEqual(base64.b64decode(voice.media.data_base64), _demo_audio_bytes())
+        self.assertTrue(any(_demo_audio_bytes()[44:]))
 
     def test_invalid_in_memory_media_is_rejected_before_creating_outputs(self) -> None:
         data = conversation()

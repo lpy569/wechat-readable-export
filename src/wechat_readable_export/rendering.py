@@ -19,7 +19,7 @@ from .native_emoji import get_render_assets, prepare_native_assets, render_nativ
 
 _FORMATS = frozenset({"html", "txt", "json"})
 _SCOPE = "仅包含提供的本地数据库中可读取的聊天记录，不能代表账号的全部历史记录。"
-_MEDIA_NOTE = "图片与表情在本机可恢复时嵌入 HTML / JSON，可离线展示；未找到或不支持的媒体保留文字提示。语音、视频和附件保留文字标记。"
+_MEDIA_NOTE = "本机可恢复的图片、表情和语音嵌入 HTML / JSON，可离线查看或播放；未找到或不支持的媒体保留文字提示。视频和附件保留文字标记。"
 
 _CSS = """
 :root{color-scheme:light;--ink:#172d29;--muted:#657870;--accent:#167459;--paper:#f5f6f2;--line:#dce5df}
@@ -40,6 +40,7 @@ button{font-size:12px;background:#fff;color:var(--ink);border:1px solid #ccd9d0;
 .message-content,.transcript{white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.transcript{margin-top:8px;padding-top:8px;border-top:1px solid #d7e4dc;font-size:13px;color:#456454}.type-label{font-size:10px;display:inline-block;margin-bottom:5px;color:var(--muted)}
 .native-emoji{display:inline-block;position:relative;width:1.5em;height:1.5em;vertical-align:-.35em;white-space:normal}.native-emoji-image{display:block;width:100%;height:100%;object-fit:contain}.native-emoji-label{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
 .media-toggle{display:block;max-width:100%;padding:0;margin-top:8px;border:0;background:transparent;border-radius:8px;overflow:hidden;cursor:zoom-in}.media-toggle:first-child{margin-top:0}.media-image{display:block;max-width:100%;width:auto;height:auto;max-height:340px;object-fit:contain;border-radius:8px}.media-toggle:not(.expanded){max-width:320px}.media-toggle.expanded{cursor:zoom-out}.media-toggle.expanded .media-image{max-height:none}.media-unavailable,.media-reason{font-size:11px;color:var(--muted);margin-top:6px;white-space:pre-wrap;overflow-wrap:anywhere}
+.media-audio{display:block;width:280px;max-width:100%;height:40px;margin-top:8px}.media-audio:first-child{margin-top:0}
 .warnings{border:1px solid #e6dbbc;background:#fffcf1;padding:12px 16px;border-radius:9px;font-size:12px;margin:22px 0;color:#775e2a}.warnings summary{cursor:pointer;font-weight:600}.warnings ul{margin:8px 0 0;padding-left:20px;overflow-wrap:anywhere}
 .empty{text-align:center;padding:70px 20px;color:var(--muted)}.empty strong{display:block;color:var(--ink);font-size:18px;margin-bottom:6px}.footer{border-top:1px solid var(--line);padding:20px 0 30px;color:var(--muted);font-size:11px}
 [hidden]{display:none!important}@media(max-width:680px){.shell{padding:0 16px}.masthead{padding-top:28px}.filters{grid-template-columns:1fr 1fr;gap:9px}.toolbar{padding-top:12px}.message{padding-right:5%}.message.self{padding-left:5%}.summary{gap:5px 16px}.bubble{padding:10px 12px}.message-meta{gap:7px}}
@@ -63,6 +64,7 @@ _JS = """
       node,
       sender: node.dataset.sender,
       day: node.dataset.day,
+      audio: Array.from(node.querySelectorAll('audio')),
       search: node.textContent.toLocaleLowerCase()
     }))
   }));
@@ -82,6 +84,7 @@ _JS = """
           (!start || (entry.day && entry.day >= start)) &&
           (!end || (entry.day && entry.day <= end));
         if (entry.node.hidden === match) entry.node.hidden = !match;
+        if (!match) for (const audio of entry.audio) audio.pause();
         if (match) visible++;
       }
       group.section.hidden = visible === 0;
@@ -108,6 +111,13 @@ _JS = """
       const expanded = button.classList.toggle('expanded');
       button.setAttribute('aria-expanded', String(expanded));
       button.setAttribute('aria-label', expanded ? '缩小图片' : '放大图片');
+    });
+  }
+  const audioPlayers = Array.from(document.querySelectorAll('.media-audio'));
+  for (const audio of audioPlayers) {
+    audio.addEventListener('play', () => {
+      for (const other of audioPlayers) if (other !== audio) other.pause();
+      if (audio.closest('.message').hidden) audio.pause();
     });
   }
   filter();
@@ -146,9 +156,11 @@ def _media_reason(message: Message) -> str:
         if media.status == "missing":
             return "本机未找到可恢复的媒体文件。"
         if media.status == "unsupported":
-            return "此媒体格式暂不支持展示。"
+            return "此语音格式暂不支持播放。" if media.kind == "audio" else "此媒体格式暂不支持展示。"
     elif (message.type_code & 0xFFFFFFFF) in {3, 47}:
         return "此记录未附带可展示的图片文件。"
+    elif (message.type_code & 0xFFFFFFFF) == 34:
+        return "此记录未附带可播放的语音文件。"
     return ""
 
 
@@ -157,11 +169,16 @@ def _media_html(message: Message) -> str:
     reason = _media_reason(message)
     if media is None or media.status != "available":
         return f'<div class="media-unavailable">{_escape(reason)}</div>' if reason else ""
-    # write_exports validates the MIME, strict Base64, and raster bytes before
+    # write_exports validates the MIME, strict Base64, and media bytes before
     # any output is staged; paths and remote URLs cannot enter this attribute.
     source = f"data:{media.mime_type};base64,{media.data_base64}"
-    label = "动画表情" if media.kind == "sticker" else "聊天图片"
     reason_html = f'<div class="media-reason">{_escape(reason)}</div>' if reason else ""
+    if media.kind == "audio":
+        return (
+            '<audio class="media-audio" controls preload="none" aria-label="聊天语音" '
+            f'src="{_escape(source)}">浏览器不支持语音播放。</audio>' + reason_html
+        )
+    label = "动画表情" if media.kind == "sticker" else "聊天图片"
     return (
         '<button class="media-toggle" type="button" aria-expanded="false" aria-label="放大图片">'
         f'<img class="media-image" src="{_escape(source)}" alt="{label}" loading="lazy" decoding="async">'
@@ -220,13 +237,18 @@ def _render_html(conversation: Conversation) -> str:
             image_shown = ((message.type_code & 0xFFFFFFFF) == 3
                            and message.media is not None
                            and message.media.status == "available")
+            audio_shown = ((message.type_code & 0xFFFFFFFF) == 34
+                           and message.media is not None
+                           and message.media.kind == "audio"
+                           and message.media.status == "available")
             type_label = (
                 f'<div class="type-label">{_escape(message.type)}</div>'
-                if message.type_code != 1 and not image_shown else ""
+                if message.type_code != 1 and not (image_shown or audio_shown) else ""
             )
             content_html = (
                 f'<div class="message-content">{render_native_text(message.content, native_assets)}</div>'
-                if not (image_shown and message.content.strip() == "[图片]") else ""
+                if not ((image_shown and message.content.strip() == "[图片]")
+                        or (audio_shown and message.content.strip() == "[语音]")) else ""
             )
             transcript = _transcript(message)
             transcript_html = (
@@ -254,7 +276,7 @@ def _render_html(conversation: Conversation) -> str:
     csp = (
         "default-src 'none'; "
         f"script-src {_hash_csp(_JS)}; style-src {_hash_csp(_CSS)}; "
-        "connect-src 'none'; img-src data:; font-src 'none'; media-src 'none'; "
+        "connect-src 'none'; img-src data:; font-src 'none'; media-src data:; "
         "object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
     )
     count = len(conversation.messages)
