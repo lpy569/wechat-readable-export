@@ -1,0 +1,11 @@
+This distribution includes a reduced and modified subset of:
+wechatauto-replica by the wechatauto-replica contributors.
+https://github.com/fanyuantaier/wechatauto-replica
+Tag v1.2.4.4, commit 91dc0e1a601013b759b261061d8f7642f736af90.
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The source subset preserves upstream Config.Cipher extraction, SQLCipher key
+verification, and page decryption. Package/UI initialization, cache persistence,
+account self-healing, and unrelated database queries have been removed. Windows
+API loading is lazy, CloseHandle ABI is declared, and standard logging replaces
+the upstream logger. Strict snapshot/WAL authentication is added in backend.py.

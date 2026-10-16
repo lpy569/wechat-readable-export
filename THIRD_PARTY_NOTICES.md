@@ -1,0 +1,40 @@
+# Third-party notices
+
+## wechatauto-replica
+
+- Repository: https://github.com/fanyuantaier/wechatauto-replica
+- Source revision: `91dc0e1a601013b759b261061d8f7642f736af90` (tag `v1.2.4.4`)
+- Original source: `wechatauto/db.py`
+- License: Apache License 2.0
+- Included license: `src/wechat_readable_export/_vendor/LICENSE`
+- Included provenance and modification notice: `src/wechat_readable_export/_vendor/NOTICE`
+
+`_vendor/db_readonly.py` contains selected and adapted constants, SQLCipher page
+verification/decryption, read-only Windows process enumeration helpers and
+Config.Cipher key scanning. The full upstream package is not imported or
+installed. Its GUI, message-sending, process-writing, key-cache, automatic
+account-switching, media download and listener features are not included.
+
+The surrounding account selection, snapshot/WAL validation, CLI, message model,
+rendering and tests in this repository are maintained independently. Changes
+to upstream layout anchors must be reviewed and validated before updating the
+vendored module.
+
+## wechat-chat-export — design reference
+
+- Repository: https://github.com/zhuzhangxue/wechat-chat-export
+- Reviewed revision: `2c49469a91e2f3b0c73a581e15a8ad2db25b7923`
+- License: Apache License 2.0
+
+Its exporter informed the initial workflow and the handling of per-shard sender
+identities, message formats and disposable caches. This project does not bundle
+its full exporter or its application UI. The current parser and renderers are
+separate implementations.
+
+## Runtime dependencies
+
+- `cryptography`: https://github.com/pyca/cryptography — Apache-2.0 OR BSD-3-Clause
+- `zstandard`: https://github.com/indygreg/python-zstandard — BSD-3-Clause
+
+These dependencies are installed separately by the package manager. Their own
+distributed license files govern their code and any bundled native libraries.

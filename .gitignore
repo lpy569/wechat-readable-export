@@ -1,0 +1,32 @@
+# Python / local environment
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local conversations and decrypted material must stay outside version control.
+exports/
+demo-output/
+outputs/
+private/
+*.db
+*.db-*
+*.kvdb*
+*.stamp
+keys.json
+image_keys.json
+chat.html
+chat.txt
+chat.json
+*.log
+.env

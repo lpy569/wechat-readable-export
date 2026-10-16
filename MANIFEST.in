@@ -1,0 +1,3 @@
+include LICENSE NOTICE THIRD_PARTY_NOTICES.md
+recursive-include src/wechat_readable_export/_vendor *.txt LICENSE NOTICE
+recursive-include docs *.md *.png

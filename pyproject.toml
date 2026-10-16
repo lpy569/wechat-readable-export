@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wechat-readable-export"
+version = "0.1.0"
+description = "把 Windows 微信本地聊天记录导出为离线可阅读的 HTML、TXT 和 JSON"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+keywords = ["wechat", "weixin", "chat-export", "offline", "html"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Communications :: Chat",
+]
+dependencies = ["cryptography>=41", "zstandard>=0.22,<1"]
+
+[project.scripts]
+wechat-export = "wechat_readable_export.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"wechat_readable_export._vendor" = ["*.txt", "LICENSE", "NOTICE"]

@@ -1,0 +1,9 @@
+wechat-readable-export
+Copyright 2026 wechat-readable-export contributors
+
+This project contains adapted, read-only portions of wechatauto-replica.
+Copyright and attribution notices for those portions are retained in
+src/wechat_readable_export/_vendor/NOTICE and THIRD_PARTY_NOTICES.md.
+
+WeChat and Weixin are names of Tencent products. This project is independent
+and is not affiliated with or endorsed by Tencent.
